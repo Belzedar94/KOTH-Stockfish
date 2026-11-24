@@ -24,11 +24,26 @@ using namespace Stockfish;
 
 static PyObject* PyFFishError;
 
+// The piece map and the attack tables only depend on the variant, so they are
+// rebuilt only when a call uses a different variant than the previous one.
+// set_option and load_variant_config can change the variant definitions or the
+// global tables (UCI_Variant, VariantPath), so they invalidate this cache.
+// pyffish never releases the GIL, so these statics need no further locking.
+static const Variant* initializedVariant = nullptr;
+
+static void invalidate_variant_cache() {
+    initializedVariant = nullptr;
+}
+
 void buildPosition(Position& pos, StateListPtr& states, const char *variant, const char *fen, PyObject *moveList, const bool chess960) {
     states = StateListPtr(new std::deque<StateInfo>(1)); // Drop old and create a new one
 
     const Variant* v = variants.find(std::string(variant))->second;
-    UCI::init_variant(v);
+    if (v != initializedVariant)
+    {
+        UCI::init_variant(v);
+        initializedVariant = v;
+    }
     if (strcmp(fen, "startpos") == 0)
         fen = v->startFen.c_str();
     pos.set(v, std::string(fen), chess960, &states->back(), Threads.main());
@@ -84,6 +99,7 @@ extern "C" PyObject* pyffish_setOption(PyObject* self, PyObject *args) {
 
     if (Options.count(name))
     {
+        invalidate_variant_cache();
         PyObject *Value = PyUnicode_AsEncodedString( PyObject_Str(valueObj), "UTF-8", "strict");
         Options[name] = std::string(PyBytes_AS_STRING(Value));
         Py_XDECREF(Value);
@@ -102,6 +118,7 @@ extern "C" PyObject* pyffish_loadVariantConfig(PyObject* self, PyObject *args) {
     if (!PyArg_ParseTuple(args, "s", &config))
         return NULL;
     std::stringstream ss(config);
+    invalidate_variant_cache();
     variants.parse_istream<false>(ss);
     Options["UCI_Variant"].set_combo(variants.get_keys());
     Py_RETURN_NONE;
